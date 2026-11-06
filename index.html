@@ -126,6 +126,24 @@ th{font-size:14px;color:var(--muted);font-weight:400}
 .soon{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
 .soon div{border:2px dashed var(--line);border-radius:16px;padding:12px;color:var(--muted);font-size:15px;line-height:1.5}
 .soon b{color:var(--ink);display:block;font-family:var(--f-title);font-weight:400;font-size:18px}
+.speak{display:inline-flex;align-items:center;gap:8px;background:#e6f4fb;border:3px solid #9fd0e6;border-radius:999px;padding:10px 20px;font-family:var(--f-title);font-size:19px}
+.speak svg{width:26px;height:26px}
+.rec-list{display:flex;flex-direction:column;gap:10px}
+.rec-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:2px solid var(--line);border-radius:16px;padding:10px 14px}
+.rec-row .lbl{font-family:var(--f-letter);font-weight:700;font-size:34px;min-width:70px}
+.rec-row .ex{color:var(--muted);font-size:15px;flex:1 1 100px;font-family:var(--f-letter)}
+.rec-row .stt{font-size:14px;border-radius:999px;padding:3px 10px;background:#f1f4f6}
+.rec-row .stt.ok{background:#dff5e6;color:#1d6b33}
+.rec-row .acts{display:flex;gap:8px;flex-wrap:wrap}
+.sbtn{border:2px solid var(--line);background:#fff;border-radius:12px;padding:9px 14px;font-size:15px}
+.sbtn.rec{background:var(--miss);border-color:var(--miss);color:#fff}
+.sbtn.go{background:var(--go);border-color:var(--go);color:#fff}
+.rec-msg{width:100%;font-size:14px;color:var(--muted)}
+.rec-msg.bad{color:var(--miss)}
+.onset{display:flex;align-items:center;gap:10px;font-family:var(--f-letter);font-weight:700;font-size:clamp(34px,6vw,52px);flex-wrap:wrap;justify-content:center}
+.onset .chip{display:inline-flex;align-items:center;gap:6px;background:#eef6fa;border:3px solid var(--line);border-radius:16px;padding:2px 14px}
+.onset .chip.r{background:var(--rose)}
+.onset .chip svg{width:26px;height:26px}
 .danger{background:#fff;border:2px solid var(--miss);color:var(--miss);border-radius:14px;padding:10px 16px;font-size:16px}
 .confirm{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .gate{position:fixed;inset:0;background:rgba(38,56,74,.45);display:grid;place-items:center;z-index:30;padding:16px}
@@ -152,6 +170,7 @@ const DATA={
   newSound:"n",                    // 오늘 새 소리
   blend:[["s","a","t"],["p","i","n"],["t","a","p"]],
   readWords:["sat","pin","tap","nap"],
+  rimes:["at","in","ap"],          // 끝소리 (h + at = hat 방식)
   spellWords:["pit","nap","tin"],
   sight:[{w:"I",tip:"대문자 I는 혼자 쓰면 '나'라는 뜻이에요. 글자 이름처럼 읽어요."},{w:"the",tip:"th 소리는 아직 안 배웠어요. 이 단어는 통째로 기억해요."}],
   sentence:["Pip","sat","in","a","tin."],
@@ -173,6 +192,8 @@ const GROUPS=[
   {name:"사이트워드",steps:[6],cls:"c3"},
   {name:"리딩",steps:[7],cls:"c4"}
 ];
+const EX={s:"sun",a:"apple",t:"top",i:"igloo",p:"pig",n:"net",at:"hat",in:"pin",ap:"tap",it:"sit"};
+const ONSET={sat:["s","at"],pin:["p","in"],tap:["t","ap"],nap:["n","ap"]};
 const CATS=[["sound","소리 알기"],["blend","소리 합치기"],["read","단어 읽기"],["spell","철자"],["sight","사이트워드"],["reading","리딩"]];
 
 /* ---------- 저장 (이 기기에만) ---------- */
@@ -192,6 +213,45 @@ let S=load();
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 function rec(cat,ok){S.records[cat].all++;if(ok)S.records[cat].ok++;save()}
 
+/* ---------- 녹음한 소리 저장 (이 기기의 IndexedDB) ---------- */
+const IDB={db:null,
+  open(){return new Promise((res,rej)=>{try{if(!("indexedDB" in window))return rej("none");const r=indexedDB.open("phonics-audio",1);r.onupgradeneeded=()=>r.result.createObjectStore("clips");r.onsuccess=()=>{IDB.db=r.result;res()};r.onerror=()=>rej(r.error)}catch(e){rej(e)}})},
+  st(mode){return IDB.db.transaction("clips",mode).objectStore("clips")},
+  put(k,v){return new Promise((res,rej)=>{try{const q=IDB.st("readwrite").put(v,k);q.onsuccess=()=>res();q.onerror=()=>rej(q.error)}catch(e){rej(e)}})},
+  del(k){return new Promise(res=>{try{const q=IDB.st("readwrite").delete(k);q.onsuccess=q.onerror=()=>res()}catch(e){res()}})},
+  all(){return new Promise(res=>{try{const s=IDB.st("readonly");const ks=s.getAllKeys(),vs=s.getAll();let n=0;const fin=()=>{if(++n===2)res((ks.result||[]).map((k,i)=>[k,vs.result[i]]))};ks.onsuccess=fin;vs.onsuccess=fin;ks.onerror=vs.onerror=()=>res([])}catch(e){res([])}})}
+};
+const CLIPS=new Map();let dbReady=false;
+async function loadClips(){try{await IDB.open();dbReady=true;(await IDB.all()).forEach(([k,v])=>{if(v&&v.blob)CLIPS.set(k,URL.createObjectURL(v.blob))})}catch(e){dbReady=false}}
+function neededKeys(){
+  return [...DATA.learned,DATA.newSound].map(x=>({key:"s:"+x,label:x,ex:EX[x]||"",kind:"낱소리"}))
+    .concat(DATA.rimes.map(x=>({key:"r:"+x,label:"-"+x,ex:EX[x]||"",kind:"끝소리"})));
+}
+function playKey(k,quiet){const u=CLIPS.get(k);if(!u){if(!quiet)toast("아직 녹음 안 된 소리예요. 부모 관리에서 녹음해요");return}try{new Audio(u).play().catch(()=>toast("소리를 재생하지 못했어요"))}catch(e){}}
+/* 녹음 다듬기: 앞뒤 빈 소리 자르기, 크기 맞추기, WAV로 저장 (어느 기기에서나 재생) */
+async function processBlob(blob){
+  const AC=window.AudioContext||window.webkitAudioContext;const ac=new AC();
+  const ab=await blob.arrayBuffer();
+  const buf=await new Promise((res,rej)=>{const p=ac.decodeAudioData(ab,res,rej);if(p&&p.catch)p.catch(rej)});
+  try{ac.close()}catch(e){}
+  const ch=buf.getChannelData(0),sr=buf.sampleRate;
+  let peak=0;for(let i=0;i<ch.length;i++){const v=Math.abs(ch[i]);if(v>peak)peak=v}
+  if(peak<0.02)return{err:"소리가 너무 작아요. 기기에 조금 더 가까이 대고 녹음해요"};
+  const th=Math.max(0.01,peak*0.08);let s=0,e=ch.length-1;
+  while(s<ch.length&&Math.abs(ch[s])<th)s++;while(e>s&&Math.abs(ch[e])<th)e--;
+  const pad=Math.floor(sr*0.06);s=Math.max(0,s-pad);e=Math.min(ch.length-1,e+pad);
+  const dur=(e-s)/sr;
+  if(dur<0.08)return{err:"너무 짧아요. 다시 녹음해요"};
+  if(dur>3)return{err:"너무 길어요. 소리 하나만 녹음해요 (3초 안으로)"};
+  const g=0.9/peak,out=new Float32Array(e-s);for(let i=0;i<out.length;i++)out[i]=ch[s+i]*g;
+  const f=Math.min(out.length>>1,Math.floor(sr*0.01));for(let i=0;i<f;i++){out[i]*=i/f;out[out.length-1-i]*=i/f}
+  return{blob:wav(out,sr),dur,warn:peak>=0.99?"소리가 너무 커서 깨졌을 수 있어요. 들어보고 이상하면 조금 떨어져서 다시 녹음해요":null};
+}
+function wav(f,sr){const b=new ArrayBuffer(44+f.length*2),v=new DataView(b);const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i))};
+  w(0,"RIFF");v.setUint32(4,36+f.length*2,true);w(8,"WAVE");w(12,"fmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,"data");v.setUint32(40,f.length*2,true);
+  for(let i=0;i<f.length;i++){const x=Math.max(-1,Math.min(1,f[i]));v.setInt16(44+i*2,x<0?x*0x8000:x*0x7fff,true)}
+  return new Blob([b],{type:"audio/wav"})}
+
 /* ---------- 작은 도구 ---------- */
 const app=document.getElementById("app");
 function h(tag,attrs,...kids){const e=document.createElement(tag);if(attrs)for(const k in attrs){if(k==="class")e.className=attrs[k];else if(k==="html")e.innerHTML=attrs[k];else if(k.startsWith("on"))e.addEventListener(k.slice(2),attrs[k]);else e.setAttribute(k,attrs[k])}kids.flat().forEach(c=>{if(c==null)return;e.append(c.nodeType?c:document.createTextNode(c))});return e}
@@ -200,6 +260,7 @@ const ICON={
   gear:'<svg viewBox="0 0 24 24" fill="none" stroke="#26384a" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.9 1.9M16.6 16.6l1.9 1.9M5.5 18.5l1.9-1.9M16.6 7.4l1.9-1.9"/></svg>',
   play:'<svg viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="#fff"/></svg>',
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="#26384a" stroke-width="2.2" stroke-linejoin="round"><path d="M3.5 11 12 4l8.5 7"/><path d="M6 10v9.5h12V10"/></svg>',
+  spk:'<svg viewBox="0 0 24 24" fill="none" stroke="#1f6f96" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
   mute:'<svg viewBox="0 0 24 24" fill="none" stroke="#607487" stroke-width="2" stroke-linejoin="round"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5" stroke-linecap="round"/></svg>',
   ear:'<svg viewBox="0 0 64 64"><path d="M22 40c0 8 5 12 10 12s8-3 8-8c0-6 10-9 10-20 0-9-7-16-16-16S18 14 18 24" fill="#ffc9a8" stroke="#26384a" stroke-width="3" stroke-linecap="round"/><path d="M28 26c0-4 3-7 6-7s6 3 6 7c0 4-5 5-5 9" fill="none" stroke="#26384a" stroke-width="3" stroke-linecap="round"/><path d="M52 20c3 4 3 10 0 14M57 16c5 6 5 16 0 22" fill="none" stroke="#e0806e" stroke-width="3" stroke-linecap="round"/></svg>',
   open:'<svg viewBox="0 0 64 64"><path d="M6 16c9-4 18-4 26 3v32c-8-6-17-6-26-3z" fill="#fff" stroke="#6b4fb8" stroke-width="3" stroke-linejoin="round"/><path d="M58 16c-9-4-18-4-26 3v32c8-6 17-6 26-3z" fill="#fff" stroke="#6b4fb8" stroke-width="3" stroke-linejoin="round"/><path d="M12 25h14M12 32h14M12 39h10M38 25h14M38 32h14M38 39h10" stroke="#a996e6" stroke-width="2.6" stroke-linecap="round"/></svg>',
@@ -207,7 +268,8 @@ const ICON={
   star:'<svg viewBox="0 0 24 24"><path d="M12 2.8l2.8 5.9 6.4.8-4.7 4.4 1.2 6.4L12 17.2l-5.7 3.1 1.2-6.4L2.8 9.5l6.4-.8z" fill="#ffcf3f" stroke="#e0a91a" stroke-width="1.2" stroke-linejoin="round"/></svg>'
 };
 const svg=k=>h("span",{html:ICON[k],style:"display:contents"});
-function sayStub(){return h("div",{class:"say"},svg("mute"),"소리 준비 전 · 낱소리는 녹음 기능을 만든 뒤 들어가요")}
+function sayStub(t){return h("div",{class:"say"},svg("mute"),t||"소리 준비 전")}
+function soundBtn(key,text){if(CLIPS.has(key))return h("button",{class:"speak",onclick:()=>playKey(key)},svg("spk"),text||"소리 듣기");return sayStub("소리 준비 전 · 부모 관리에서 녹음해요")}
 let toastT;function toast(msg){document.querySelectorAll(".toast").forEach(t=>t.remove());const t=h("div",{class:"toast",role:"status"},msg);document.body.append(t);clearTimeout(toastT);toastT=setTimeout(()=>t.remove(),2600)}
 function shuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 
@@ -303,7 +365,7 @@ function step2(stage){
   parentCheck(stage,shuffle(DATA.learned),(st,l)=>{
     st.append(note("아이가 글자를 보고 소리를 말해요. 글자 이름(에이, 에스)이 아니라 소리예요. 동작도 같이 해요."));
     st.append(h("div",{class:"big pop"},l));
-    st.append(sayStub());
+    st.append(soundBtn("s:"+l));
   },"sound",finishStep,"엄마가 소리를 먼저 들려주고, 같이 말한 뒤 아이 혼자 다시 해요.");
 }
 /* 3단계: 새 소리 */
@@ -317,7 +379,7 @@ function step3(stage){
     ["따라 쓰기","책의 쓰기 칸에 "+n+"을 따라 써요."]
   ];
   const doneSet=new Set();
-  stage.replaceChildren(h("div",{class:"big pop"},n),sayStub());
+  stage.replaceChildren(h("div",{class:"big pop"},n),soundBtn("s:"+n));
   const list=h("ul",{class:"checklist"});
   const finish=h("button",{class:"btn next",disabled:"",style:"opacity:.45"},"다 했어요");
   function upd(){const all=doneSet.size===acts.length;finish.disabled=!all;finish.style.opacity=all?"1":".45"}
@@ -342,8 +404,11 @@ function step4(stage){
     st.append(note("아이가 글자를 하나씩 누르며 소리를 내요. 다 누르면 이어서 읽어요. 그림 없이 읽어요."));
     const tiles=h("div",{class:"word-tiles"});let k=0;
     const bar=h("div",{class:"blendbar",style:"visibility:hidden"},w);
-    w.split("").forEach((c,idx)=>tiles.append(h("button",{class:"tile",onclick:(e)=>{if(idx!==k)return;e.currentTarget.classList.add("lit");k++;if(k===w.length)bar.style.visibility="visible"}},c)));
+    w.split("").forEach((c,idx)=>tiles.append(h("button",{class:"tile",onclick:(e)=>{playKey("s:"+c,true);if(idx!==k)return;e.currentTarget.classList.add("lit");k++;if(k===w.length)bar.style.visibility="visible"}},c)));
     st.append(tiles,bar);
+    const o=ONSET[w];
+    if(o){const chip=(t,key,c)=>h("button",{class:"chip "+c,onclick:()=>playKey(key)},t,CLIPS.has(key)?svg("spk"):null);
+      st.append(h("div",{class:"onset"},chip(o[0],"s:"+o[0],""),"+",chip(o[1],"r:"+o[1],"r"),"=",h("span",null,w)))}
   },"read",finishStep,"엄마가 소리를 하나씩 짚어 주고, 같이 합쳐 읽은 뒤 아이 혼자 다시 해요.");
 }
 /* 5단계: 듣고 글자 카드로 단어 만들기 (화면이 정답을 확인) */
@@ -379,7 +444,7 @@ function step6(stage){
     st.append(note("규칙대로 읽을 수 있는 부분은 먼저 소리로 읽고, 안 맞는 부분만 기억해요."));
     st.append(h("div",{class:"big pop",style:"color:#8a5bd1"},o.w));
     st.append(h("div",{class:"hint"},o.tip));
-    st.append(sayStub());
+    st.append(sayStub("단어 소리는 나중에 자동으로 들어가요"));
   },"sight",finishStep,"엄마가 먼저 읽어 주고, 같이 읽은 뒤 아이 혼자 다시 해요.");
 }
 /* 7단계: 짧은 글 읽기 + 뜻 확인 */
@@ -425,11 +490,19 @@ function parent(){
     h("div",{class:"tbl-wrap"},h("table",null,h("thead",null,h("tr",null,h("th",null,"기술"),h("th",null,"맞음 / 전체"),h("th",null,"맞은 비율"),h("th",null,""))),h("tbody",null,rows)))));
   app.append(h("section",{class:"panel"},h("h2",null,"단계 바로 가기"),h("p",null,"원하는 단계 하나만 다시 해요. 오늘 진도는 바뀌지 않아요."),
     h("div",{class:"jump"},STEPS.map(s=>h("button",{onclick:()=>runLesson(s.n,{review:true,single:true})},h("b",null,s.n+"단계"),s.name)))));
+  const items=neededKeys();const missing=items.filter(x=>!CLIPS.has(x.key)).length;
+  app.append(h("section",{class:"panel"},h("h2",null,"음원 녹음"),
+    h("p",null,"지금 진도에 필요한 소리예요. 소리 하나만 짧게 내고 멈춤을 눌러요. 앞뒤 빈 소리와 크기는 자동으로 맞춰요. 아직 녹음 안 한 소리: "+missing+"개"),
+    h("div",{class:"rec-list"},items.map(recRow))));
+  const fileIn=h("input",{type:"file",accept:"application/json,.json",id:"restore-file",hidden:""});
+  fileIn.addEventListener("change",()=>{if(fileIn.files&&fileIn.files[0])restore(fileIn.files[0])});
+  app.append(h("section",{class:"panel"},h("h2",null,"백업·복원"),
+    h("p",null,"학습 기록과 녹음한 소리를 파일 하나로 저장해요. 다른 기기에서 불러오면 그대로 옮겨져요."),
+    h("div",{class:"confirm"},h("button",{class:"sbtn go",onclick:makeBackup},"백업 파일 만들기"),h("button",{class:"sbtn",onclick:()=>fileIn.click()},"백업 불러오기"),fileIn)));
   app.append(h("section",{class:"panel"},h("h2",null,"다음에 만들 기능"),
     h("div",{class:"soon"},
-      h("div",null,h("b",null,"책 사진 올리기"),"Claude 대화에 사진을 올리면 이 예시 내용이 그날 단어로 바뀌어요."),
-      h("div",null,h("b",null,"음원 녹음"),"낱소리·끝소리 녹음 → 듣기 → 등록. GitHub에 올린 뒤 시험해요."),
-      h("div",null,h("b",null,"백업·복원"),"기록을 파일로 내려받고 다시 불러와요."))));
+      h("div",null,h("b",null,"책 사진 올리기"),"Claude 대화에 사진을 올리면 예시 내용이 그날 단어로 바뀌어요."),
+      h("div",null,h("b",null,"단어 소리 자동"),"cat, the 같은 단어 소리를 ElevenLabs로 자동으로 만들어요."))));
   const conf=h("div",{class:"confirm"});
   function ask(label,fn){conf.replaceChildren(h("span",null,label+" 정말 할까요?"),h("button",{class:"danger",onclick:()=>{fn();save();parent();toast("완료했어요")}},"네"),h("button",{class:"pill-btn",onclick:()=>conf.replaceChildren(...base())},"아니요"))}
   function base(){return[h("button",{class:"danger",onclick:()=>ask("오늘 진도 처음으로",()=>{S.done=0})},"오늘 진도 처음으로"),h("button",{class:"danger",onclick:()=>ask("학습 기록 모두 지우기",()=>{S.records=blankRec()})},"학습 기록 모두 지우기")]}
@@ -437,7 +510,65 @@ function parent(){
   app.append(h("section",{class:"panel"},h("h2",null,"초기화"),conf));
 }
 
+/* 녹음 한 줄 */
+function recRow(it){
+  const row=h("div",{class:"rec-row"});let mr=null,stream=null,chunks=[],draft=null,draftUrl=null,timer=null;
+  const stt=h("span",{class:"stt"+(CLIPS.has(it.key)?" ok":"")},CLIPS.has(it.key)?"등록됨":"녹음 필요");
+  const msg=h("div",{class:"rec-msg"},it.kind+" · "+it.ex+"의 "+(it.kind==="낱소리"?"첫소리":"끝부분")+"만 녹음해요");
+  const acts=h("div",{class:"acts"});
+  function setMsg(t,bad){msg.textContent=t;msg.className="rec-msg"+(bad?" bad":"")}
+  function paint(state){acts.replaceChildren();
+    if(state==="rec"){acts.append(h("button",{class:"sbtn rec",onclick:stop},"멈춤"));return}
+    acts.append(h("button",{class:"sbtn rec",onclick:start},CLIPS.has(it.key)||draft?"다시 녹음":"녹음"));
+    if(draft)acts.append(h("button",{class:"sbtn",onclick:()=>{try{new Audio(draftUrl).play().catch(()=>{})}catch(e){}}},"들어보기"),h("button",{class:"sbtn go",onclick:register},"등록"));
+    else if(CLIPS.has(it.key))acts.append(h("button",{class:"sbtn",onclick:()=>playKey(it.key)},"등록된 소리 듣기"),h("button",{class:"sbtn",onclick:remove},"지우기"));
+  }
+  async function start(){
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.MediaRecorder){setMsg("이 화면에서는 녹음이 안 돼요. github.io 주소로 열어 주세요",true);return}
+    try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:true,autoGainControl:false}})}
+    catch(e){setMsg("마이크를 쓸 수 없어요. 브라우저에서 마이크를 허락해 주세요",true);return}
+    const types=["audio/mp4","audio/webm;codecs=opus","audio/webm"];
+    const type=types.find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
+    try{mr=new MediaRecorder(stream,type?{mimeType:type}:undefined)}catch(e){mr=new MediaRecorder(stream)}
+    chunks=[];mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+    mr.onstop=async()=>{clearTimeout(timer);stream.getTracks().forEach(t=>t.stop());
+      const raw=new Blob(chunks,{type:mr.mimeType||type||"audio/webm"});setMsg("확인하는 중…");
+      try{const r=await processBlob(raw);
+        if(r.err){setMsg(r.err,true);paint();return}
+        if(draftUrl)URL.revokeObjectURL(draftUrl);draft=r;draftUrl=URL.createObjectURL(r.blob);
+        setMsg((r.warn?r.warn+" · ":"")+"길이 "+r.dur.toFixed(2)+"초 · 들어보고 괜찮으면 등록해요",!!r.warn);paint();
+      }catch(e){setMsg("소리를 읽지 못했어요. 다시 녹음해요",true);paint()}};
+    mr.start();setMsg("녹음 중… 소리를 한 번만 내고 멈춤을 눌러요");paint("rec");
+    timer=setTimeout(()=>{if(mr&&mr.state==="recording")mr.stop()},6000);
+  }
+  function stop(){if(mr&&mr.state==="recording")mr.stop()}
+  async function register(){if(!draft)return;
+    if(!dbReady){setMsg("이 기기에 저장할 수 없어요. 개인정보 보호(비공개) 창이 아닌지 확인해요",true);return}
+    try{await IDB.put(it.key,{blob:draft.blob,dur:draft.dur,at:Date.now()});const old=CLIPS.get(it.key);if(old)URL.revokeObjectURL(old);
+      CLIPS.set(it.key,URL.createObjectURL(draft.blob));draft=null;stt.className="stt ok";stt.textContent="등록됨";setMsg("등록했어요. 게임에서 이 소리가 나와요");paint()}
+    catch(e){setMsg("저장하지 못했어요. 다시 해 봐요",true)}}
+  async function remove(){await IDB.del(it.key);const u=CLIPS.get(it.key);if(u)URL.revokeObjectURL(u);CLIPS.delete(it.key);stt.className="stt";stt.textContent="녹음 필요";setMsg("지웠어요. 다시 녹음할 수 있어요");paint()}
+  row.append(h("div",{class:"lbl"},it.label),h("div",{class:"ex"},it.ex),stt,acts,msg);paint();return row;
+}
+/* 백업·복원 */
+function b64(blob){return new Promise(res=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]||"");r.onerror=()=>res("");r.readAsDataURL(blob)})}
+async function makeBackup(){
+  const clips={};if(dbReady)for(const [k,v] of await IDB.all()){if(v&&v.blob)clips[k]={dur:v.dur,at:v.at,type:v.blob.type,data:await b64(v.blob)}}
+  const blob=new Blob([JSON.stringify({app:"phonics-reading",version:1,savedAt:new Date().toISOString(),records:S.records,clips})],{type:"application/json"});
+  const a=h("a",{href:URL.createObjectURL(blob),download:"phonics-backup-"+today()+".json"});document.body.append(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500);toast("백업 파일을 만들었어요 · 다운로드 폴더를 확인해요");
+}
+async function restore(file){
+  try{const d=JSON.parse(await file.text());if(!d||d.app!=="phonics-reading")throw 0;
+    if(d.records){S.records=d.records;CATS.forEach(([k])=>{if(!S.records[k])S.records[k]={ok:0,all:0}});save()}
+    let n=0;if(d.clips&&dbReady){for(const k in d.clips){const c=d.clips[k];const bin=atob(c.data);const u8=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+      const blob=new Blob([u8],{type:c.type||"audio/wav"});await IDB.put(k,{blob,dur:c.dur,at:c.at});const o=CLIPS.get(k);if(o)URL.revokeObjectURL(o);CLIPS.set(k,URL.createObjectURL(blob));n++}}
+    toast("불러왔어요 · 소리 "+n+"개");parent();
+  }catch(e){toast("이 파일은 불러올 수 없어요. 백업 파일이 맞는지 확인해요")}
+}
+
 home();
+loadClips();
 })();
 </script>
 </body></html>
