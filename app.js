@@ -196,140 +196,190 @@ function cheer(n, more){
     more ? h("button", {class:"btn next", onclick:() => { L.step = n + 1; renderStep(); }}, (n+1)+"단계 하기") : h("button", {class:"btn next", onclick:home}, "처음으로")));
 }
 function emptyStep(stage, msg){ stage.replaceChildren(h("div", {class:"hint"}, msg), h("button", {class:"btn next", onclick:finishStep}, "다음으로")); }
-/* 엄마가 듣고 누르는 확인: 틀리면 한 번 고쳐서 다시 */
-function parentCheck(stage, items, draw, cat, done, correctTip, keyOf){
+
+/* ---------- 소리 내기 ---------- */
+// 단어 소리: ElevenLabs 파일이 있으면 그걸, 없으면 기기 음성(임시)
+const TTS = {voice:null,
+  init(){ if(!("speechSynthesis" in window)) return; const pick = () => { const vs = speechSynthesis.getVoices();
+    this.voice = vs.find(v => /en[-_]US/i.test(v.lang) && /Samantha|Ava|Allison|Google US/i.test(v.name)) || vs.find(v => /en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null; };
+    pick(); try { speechSynthesis.onvoiceschanged = pick; } catch(e) {} },
+  say(t){ return new Promise(res => { if(!("speechSynthesis" in window)) return res(false);
+    try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.lang = "en-US"; if(this.voice) u.voice = this.voice; u.rate = 0.75;
+      let done = false; const fin = ok => { if(!done){ done = true; res(ok); } }; u.onend = () => fin(true); u.onerror = () => fin(false);
+      speechSynthesis.speak(u); setTimeout(() => fin(true), 3000); } catch(e){ res(false); } }); }
+};
+TTS.init();
+function clipPromise(u){ return new Promise(res => { try { const a = new Audio(u); a.onended = () => res(true); a.onerror = () => res(false); a.play().catch(() => res(false)); setTimeout(() => res(true), 4000); } catch(e){ res(false); } }); }
+function sayWord(w){ const u = wordUrl(w); return u ? clipPromise(u) : TTS.say(w); }
+function sayKey(k){ const u = CLIPS.get(k); return u ? clipPromise(u) : Promise.resolve(false); }
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function saySounds(w){ for(const c of w.split("")){ await sayKey("s:"+c); await wait(350); } }
+const hasSounds = w => w.split("").every(c => CLIPS.has("s:"+c));
+
+/* 비슷한 단어로 오답 만들기 (글자가 많이 겹치는 단어 먼저) */
+function distractors(w, pool, n){
+  const score = x => x.split("").filter((c, i) => w[i] === c).length;
+  return shuffle(pool.filter(x => x !== w)).sort((a, b) => score(b) - score(a) || (b.length === w.length) - (a.length === w.length)).slice(0, n);
+}
+const ALL_WORDS = () => uniq([...TODAY_WORDS, ...REVIEW_WORDS]);
+
+/* ---------- 퀴즈 틀 ---------- */
+// 한 문제: 듣기 버튼 + 고르기. 틀리면 한 번 더, 두 번 틀리면 정답을 보여주고 넘어가요.
+function quizRun(stage, items, make, cat, done){
   if(!items.length) return emptyStep(stage, "오늘은 이 단계 문제가 없어요.");
-  let i = 0, retry = false;
+  let i = 0;
   function show(){
+    const q = make(items[i]); let tries = 0, over = false;
     stage.replaceChildren(h("div", {class:"counter"}, (i+1)+" / "+items.length));
-    draw(stage, items[i]);
-    if(retry) stage.append(h("div", {class:"hint"}, correctTip));
-    stage.append(h("div", {class:"row"},
-      h("button", {class:"btn ok", onclick:() => { rec(cat, true, keyOf && keyOf(items[i])); next(); }}, "맞았어요"),
-      h("button", {class:"btn again", onclick:() => { rec(cat, false, keyOf && keyOf(items[i])); if(!retry){ retry = true; show(); } else next(); }}, "다시 해볼게요")));
+    if(q.top) stage.append(q.top);
+    if(q.prompt) stage.append(h("div", {class:"q"}, q.prompt));
+    if(q.play){ const b = h("button", {class:"listen", onclick:() => q.play()}, svg("spk"), "다시 듣기"); stage.append(b); setTimeout(() => q.play(), 350); }
+    const box = h("div", {class:"choices big-choices"});
+    q.choices.forEach(c => box.append(h("button", {class:q.letter ? "lt" : "", onclick:e => {
+      if(over) return; const btn = e.currentTarget; if(q.speakChoice) sayWord(c);
+      if(c === q.answer){ over = true; btn.classList.add("right"); rec(cat, tries === 0, q.key || q.answer); setTimeout(next, 900); }
+      else { tries++; btn.classList.add("wrong"); btn.disabled = true;
+        if(tries >= 2){ over = true; rec(cat, false, q.key || q.answer); [...box.children].forEach(x => { if(x.textContent === q.answer) x.classList.add("right"); }); toast("정답은 이거예요. 같이 들어 봐요"); if(q.play) setTimeout(() => q.play(), 400); setTimeout(next, 2200); }
+        else toast("다시 들어 보고 골라요"); }
+    }}, c)));
+    stage.append(box);
   }
-  function next(){ retry = false; i++; if(i < items.length) show(); else done(); }
+  function next(){ i++; if(i < items.length) show(); else done(); }
   show();
 }
-const note = txt => h("div", {class:"parent-note"}, h("span", {class:"who"}, "엄마"), txt);
-
-function step1(stage){
-  parentCheck(stage, pickWords(LV().blend), (st, w) => {
-    st.append(note("화면은 엄마만 봐요. 소리를 하나씩 끊어 말해 주면 아이가 합쳐서 단어로 말해요."));
-    st.append(h("div", {class:"big split"}, w.split("").join("·")));
-    st.append(h("div", {class:"counter"}, "정답: "+w));
-  }, "blend", finishStep, "엄마가 먼저 합쳐서 들려주고, 같이 말한 뒤 아이 혼자 다시 해요.", w => w);
+function needRec(stage, what){
+  stage.replaceChildren(h("div", {class:"hint"}, "이 단계는 낱소리 녹음이 있어야 퀴즈를 낼 수 있어요. 녹음이 안 된 소리: "+what.join(" ")+" · 부모 관리 → 음원 녹음에서 녹음해요."),
+    h("button", {class:"btn next", onclick:finishStep}, "이번엔 건너뛰기"));
 }
+
+/* 1단계: 끊어진 소리를 듣고 단어 고르기 */
+function step1(stage){
+  const words = pickWords(20).filter(hasSounds).slice(0, LV().blend);
+  if(!words.length) return needRec(stage, LEARNED.filter(c => !CLIPS.has("s:"+c)));
+  quizRun(stage, words, w => ({prompt:"소리를 합치면 어떤 단어일까?", play:() => saySounds(w), answer:w, key:w,
+    choices:shuffle([w, ...distractors(w, ALL_WORDS(), LV().name === "쉬움" ? 1 : 2)])}), "blend", finishStep);
+}
+/* 2단계: 소리를 듣고 글자 고르기 */
 function step2(stage){
-  const review = LEARNED.filter(l => l !== NEW);
+  const review = LEARNED.filter(l => l !== NEW && CLIPS.has("s:"+l));
+  if(!review.length) return needRec(stage, LEARNED.filter(c => c !== NEW && !CLIPS.has("s:"+c)));
   const missed = review.filter(l => S.misses["s:"+l] > 0);
   const items = uniq([...shuffle(missed), ...shuffle(review)]).slice(0, LV().letters);
-  parentCheck(stage, items, (st, l) => {
-    st.append(note("아이가 글자를 보고 소리를 말해요. 글자 이름(에이, 에스)이 아니라 소리예요. 동작도 같이 해요."));
-    st.append(h("div", {class:"big pop"}, l));
-    st.append(soundBtn("s:"+l));
-  }, "sound", finishStep, "엄마가 소리를 먼저 들려주고, 같이 말한 뒤 아이 혼자 다시 해요.", l => "s:"+l);
+  const n = LV().name === "쉬움" ? 2 : LV().name === "보통" ? 3 : 4;
+  quizRun(stage, items, l => ({prompt:"이 소리는 어떤 글자일까?", play:() => sayKey("s:"+l), answer:l, key:"s:"+l, letter:true,
+    choices:shuffle([l, ...shuffle(LEARNED.filter(x => x !== l)).slice(0, n - 1)])}), "sound", finishStep);
 }
+/* 3단계: 새 소리 만나기 → 소리 듣고 고르기 → 첫소리 찾기 */
 function step3(stage){
   const n = NEW;
-  const pool = [...TODAY_WORDS, ...REVIEW_WORDS];
-  const yes = pool.find(w => w[0] === n) || exFor(n);
-  const no = pool.find(w => w[0] !== n && w !== yes) || "sun";
-  const pair = shuffle([yes, no]);
-  const acts = [
-    ["이야기", "책에 나온 "+n+" 소리 이야기를 들려줘요."],
-    ["동작", "책에 나온 동작을 같이 해요. 매번 같은 동작이에요."],
-    ["공중에 쓰기", "엄마가 쓰는 걸 보고, 소리를 말하며 공중에 따라 써요."],
-    ["첫소리 찾기", null],
-    ["따라 쓰기", "책의 쓰기 칸에 "+n+"을 따라 써요."]
-  ];
-  const doneSet = new Set();
-  stage.replaceChildren(h("div", {class:"big pop"}, n), soundBtn("s:"+n));
-  const list = h("ul", {class:"checklist"});
-  const finish = h("button", {class:"btn next", disabled:"", style:"opacity:.45"}, "다 했어요");
-  const upd = () => { const all = doneSet.size === acts.length; finish.disabled = !all; finish.style.opacity = all ? "1" : ".45"; };
-  const mark = (b, i, on) => { if(on){ doneSet.add(i); b.classList.add("done"); b.querySelector(".box").innerHTML = ICON.check; } else { doneSet.delete(i); b.classList.remove("done"); b.querySelector(".box").innerHTML = ""; } upd(); };
-  acts.forEach(([t, d], i) => {
-    const b = h(d === null ? "div" : "button", d === null ? {class:"item"} : {class:"item", type:"button"}, h("span", {class:"box"}),
-      h("span", null, h("b", null, t), d ? " · "+d : " · 엄마가 두 단어를 말해 주면, "+n+"으로 시작하는 단어를 골라요."));
-    if(d === null){
-      const mc = h("div", {class:"mini-choice"});
-      pair.forEach(w => mc.append(h("button", {type:"button", onclick:e => { const right = w === yes; e.currentTarget.className = right ? "right" : "wrong"; rec("sound", right, "s:"+n); if(right) mark(b, i, true); else toast("다시 들어봐요. 엄마가 첫소리를 길게 말해 줘요"); }}, w)));
-      b.lastChild.append(mc);
-    } else b.addEventListener("click", () => mark(b, i, !doneSet.has(i)));
-    list.append(h("li", null, b));
-  });
-  finish.addEventListener("click", () => { if(!finish.disabled) finishStep(); });
-  stage.append(note("하나씩 하고 눌러서 표시해요."), list, finish);
+  function intro(){
+    stage.replaceChildren(h("div", {class:"big pop"}, n), CLIPS.has("s:"+n) ? h("button", {class:"listen", onclick:() => sayKey("s:"+n)}, svg("spk"), n+" 소리 듣기") : sayStub("소리 준비 전 · 부모 관리에서 녹음해요"),
+      h("div", {class:"q"}, "책에서 배운 동작을 하면서 소리를 내 봐요"), h("button", {class:"btn next", onclick:quiz}, "퀴즈 풀기"));
+    if(CLIPS.has("s:"+n)) setTimeout(() => sayKey("s:"+n), 350);
+  }
+  function quiz(){
+    const pool = ALL_WORDS();
+    const yes = shuffle(pool.filter(w => w[0] === n));
+    const items = [];
+    if(CLIPS.has("s:"+n)) items.push({t:"letter"});
+    yes.slice(0, LV().name === "어려움" ? 3 : 2).forEach(w => items.push({t:"first", w}));
+    if(!items.length) return emptyStep(stage, "오늘은 "+n+"으로 시작하는 단어가 없어요.");
+    quizRun(stage, items, it => {
+      if(it.t === "letter") return {prompt:"방금 배운 소리는 어떤 글자일까?", play:() => sayKey("s:"+n), answer:n, key:"s:"+n, letter:true, choices:shuffle([n, ...shuffle(LEARNED.filter(x => x !== n)).slice(0, 2)])};
+      const others = shuffle(pool.filter(w => w[0] !== n)).slice(0, LV().name === "쉬움" ? 1 : 2);
+      return {prompt:n+" 소리로 시작하는 단어는? (눌러서 들어 봐요)", answer:it.w, key:"s:"+n, speakChoice:true, choices:shuffle([it.w, ...others])};
+    }, "sound", finishStep);
+  }
+  intro();
 }
+/* 4단계: 단어를 보고 읽기 → 들리는 소리 중 맞는 것 고르기 */
 function step4(stage){
-  parentCheck(stage, pickWords(LV().read), (st, w) => {
-    st.append(note("아이가 글자를 하나씩 누르며 소리를 내요. 다 누르면 이어서 읽어요. 그림 없이 읽어요."));
-    const tiles = h("div", {class:"word-tiles"}); let k = 0;
-    const bar = h("div", {class:"blendbar", style:"visibility:hidden"}, w);
-    w.split("").forEach((c, idx) => tiles.append(h("button", {class:"tile", onclick:e => { playKey("s:"+c, true); if(idx !== k) return; e.currentTarget.classList.add("lit"); k++; if(k === w.length) bar.style.visibility = "visible"; }}, c)));
-    st.append(tiles, bar);
+  const words = pickWords(LV().read);
+  if(!words.length) return emptyStep(stage, "오늘은 읽을 단어가 없어요.");
+  let i = 0;
+  function show(){
+    const w = words[i]; const opts = shuffle([w, ...distractors(w, ALL_WORDS(), 2)]); let pickIdx = -1, tries = 0, over = false;
+    stage.replaceChildren(h("div", {class:"counter"}, (i+1)+" / "+words.length), h("div", {class:"q"}, "글자를 눌러 소리를 내고, 단어를 읽어 봐요"));
+    const tiles = h("div", {class:"word-tiles"});
+    w.split("").forEach(c => tiles.append(h("button", {class:"tile", onclick:e => { e.currentTarget.classList.add("lit"); playKey("s:"+c, true); }}, c)));
+    stage.append(tiles);
     const o = onsetOf(w);
-    if(o){ const chip = (t, key, c) => h("button", {class:"chip "+c, onclick:() => playKey(key)}, t, CLIPS.has(key) ? svg("spk") : null);
-      st.append(h("div", {class:"onset"}, chip(o[0], "s:"+o[0], ""), "+", chip(o[1], "r:"+o[1], "r"), "=", h("span", null, w))); }
-    if(wordUrl(w)) st.append(wordBtn(w));
-  }, "read", finishStep, "엄마가 소리를 하나씩 짚어 주고, 같이 합쳐 읽은 뒤 아이 혼자 다시 해요.", w => w);
+    if(o){ const chip = (t, key, c) => h("button", {class:"chip "+c, onclick:() => playKey(key, true)}, t, CLIPS.has(key) ? svg("spk") : null);
+      stage.append(h("div", {class:"onset"}, chip(o[0], "s:"+o[0], ""), "+", chip(o[1], "r:"+o[1], "r"), "=", h("span", {class:"ans-w"}, "?"))); }
+    stage.append(h("div", {class:"q"}, "어떤 소리가 맞을까? 하나씩 들어 보고 골라요"));
+    const box = h("div", {class:"sound-opts"});
+    const confirm = h("button", {class:"btn ok", disabled:"", style:"opacity:.45"}, "이거예요");
+    opts.forEach((x, k) => box.append(h("button", {class:"sopt", onclick:e => { if(over) return; sayWord(x); pickIdx = k; [...box.children].forEach(b => b.classList.remove("sel")); e.currentTarget.classList.add("sel"); confirm.disabled = false; confirm.style.opacity = "1"; }}, svg("spk"), h("span", null, String(k+1)))));
+    confirm.addEventListener("click", () => {
+      if(over || pickIdx < 0) return; const btn = box.children[pickIdx];
+      if(opts[pickIdx] === w){ over = true; btn.classList.add("right"); rec("read", tries === 0, w); const aw = stage.querySelector(".ans-w"); if(aw) aw.textContent = w; setTimeout(next, 1000); }
+      else { tries++; btn.classList.add("wrong"); btn.disabled = true; pickIdx = -1; confirm.disabled = true; confirm.style.opacity = ".45";
+        if(tries >= 2){ over = true; rec("read", false, w); const k = opts.indexOf(w); box.children[k].classList.add("right"); sayWord(w); toast("정답은 "+(k+1)+"번이에요"); setTimeout(next, 2200); }
+        else toast("다시 들어 보고 골라요"); }
+    });
+    stage.append(box, confirm);
+  }
+  function next(){ i++; if(i < words.length) show(); else finishStep(); }
+  show();
 }
+/* 5단계: 단어를 듣고 글자 카드로 만들기 */
 function step5(stage){
   const words = pickWords(LV().spell); let i = 0;
   if(!words.length) return emptyStep(stage, "오늘은 만들 단어가 없어요.");
-  function poolFor(w){
-    const extra = shuffle(LEARNED.filter(c => !w.includes(c))).slice(0, LV().spellExtra);
-    return shuffle(uniq([...w.split(""), ...extra]));
-  }
+  const poolFor = w => shuffle(uniq([...w.split(""), ...shuffle(LEARNED.filter(c => !w.includes(c))).slice(0, LV().spellExtra)]));
   function show(){
     const w = words[i]; let fails = 0; const picked = [];
-    stage.replaceChildren(h("div", {class:"counter"}, (i+1)+" / "+words.length),
-      note("엄마가 단어를 말해 주면 아이가 소리를 나눠서 글자 카드를 골라요. 단어는 아래 버튼을 눌러 엄마만 봐요."));
-    const rv = h("button", {class:"reveal", onclick:() => rv.replaceChildren("엄마가 읽어 줄 단어: ", h("b", null, w))}, "엄마만 보기 (눌러서 보기)");
+    stage.replaceChildren(h("div", {class:"counter"}, (i+1)+" / "+words.length), h("div", {class:"q"}, "단어를 듣고 글자 카드로 만들어 봐요"),
+      h("button", {class:"listen", onclick:() => sayWord(w)}, svg("spk"), "다시 듣기"));
+    setTimeout(() => sayWord(w), 350);
     const slots = h("div", {class:"slots"}), pick = h("div", {class:"pick"});
     const paint = () => slots.replaceChildren(...w.split("").map((_, k) => h("button", {class:"slot"+(picked[k] ? " filled" : ""), onclick:() => { if(picked[k]){ picked.splice(k, 1); paint(); } }}, picked[k] || "")));
     poolFor(w).forEach(c => pick.append(h("button", {onclick:() => { playKey("s:"+c, true); if(picked.length >= w.length) return; picked.push(c); paint(); if(picked.length === w.length) check(); }}, c)));
     const nextWord = () => { i++; i < words.length ? show() : finishStep(); };
     function check(){
-      const ok = picked.join("") === w; rec("spell", ok, w);
-      if(ok){ slots.classList.add("good"); setTimeout(nextWord, 900); return; }
+      const ok = picked.join("") === w;
+      if(ok){ rec("spell", fails === 0, w); slots.classList.add("good"); setTimeout(nextWord, 900); return; }
       fails++; slots.classList.remove("shake"); void slots.offsetWidth; slots.classList.add("shake");
-      if(fails < 2){ toast("엄마가 소리를 하나씩 다시 말해 줘요"); setTimeout(() => { picked.length = 0; paint(); }, 700); }
-      else setTimeout(() => { picked.length = 0; picked.push(...w.split("")); paint(); slots.classList.add("good"); toast("정답은 "+w+"예요. 같이 읽어 봐요"); setTimeout(nextWord, 1800); }, 700);
+      if(fails < 2){ toast("다시 들어 보고 소리를 하나씩 찾아요"); setTimeout(() => { picked.length = 0; paint(); sayWord(w); }, 700); }
+      else { rec("spell", false, w); setTimeout(() => { picked.length = 0; picked.push(...w.split("")); paint(); slots.classList.add("good"); toast("정답은 "+w+"예요"); sayWord(w); setTimeout(nextWord, 1800); }, 700); }
     }
-    paint(); stage.append(rv, slots, pick);
+    paint(); stage.append(slots, pick);
   }
   show();
 }
+/* 6단계: 사이트워드 듣고 고르기 */
 function step6(stage){
-  const items = uniq([...SIGHT_TODAY, ...shuffle(SIGHT_REVIEW)].map(o => JSON.stringify(o))).map(s => JSON.parse(s)).slice(0, LV().sight);
-  parentCheck(stage, items, (st, o) => {
-    st.append(note("규칙대로 읽을 수 있는 부분은 먼저 소리로 읽고, 안 맞는 부분만 기억해요."));
-    st.append(h("div", {class:"big pop", style:"color:#8a5bd1"}, o.w));
-    if(o.tip) st.append(h("div", {class:"hint"}, o.tip));
-    st.append(wordBtn(o.w));
-  }, "sight", finishStep, "엄마가 먼저 읽어 주고, 같이 읽은 뒤 아이 혼자 다시 해요.", o => "w:"+o.w);
+  const all = uniq([...SIGHT_TODAY, ...SIGHT_REVIEW].map(o => o.w));
+  const items = uniq([...SIGHT_TODAY.map(o => o.w), ...shuffle(SIGHT_REVIEW.map(o => o.w))]).slice(0, LV().sight);
+  const tipOf = w => ([...SIGHT_TODAY, ...SIGHT_REVIEW].find(o => o.w === w) || {}).tip;
+  quizRun(stage, items, w => {
+    const others = shuffle(uniq([...all.filter(x => x !== w), ...ALL_WORDS()])).slice(0, LV().name === "쉬움" ? 1 : 2);
+    return {top:tipOf(w) ? h("div", {class:"hint"}, tipOf(w)) : null, prompt:"들리는 단어를 골라요", play:() => sayWord(w), answer:w, key:"w:"+w, choices:shuffle([w, ...others])};
+  }, "sight", finishStep);
 }
+/* 7단계: 짧은 글 읽기 → 질문 퀴즈 */
 function step7(stage){
-  const words = T.sentence || [], sightSet = T.sentenceSight || [], Q = T.question;
-  if(!words.length) return emptyStep(stage, "오늘은 읽을 글이 없어요. 리딩서를 같이 읽어요.");
-  let retry = false;
+  const words = T.sentence || [], sightSet = (T.sentenceSight || []).map(x => x.toLowerCase()), Q = T.question;
+  if(!words.length) return emptyStep(stage, "오늘은 읽을 글이 없어요. 리딩서를 읽어요.");
   function read(){
-    stage.replaceChildren(note("아이가 단어를 하나씩 누르며 읽어요. 보라색 단어는 사이트워드예요. 막히면 그림 말고 글자를 짚어 소리를 합쳐요."));
+    stage.replaceChildren(h("div", {class:"q"}, "소리 내서 읽어 봐요. 모르는 단어는 눌러서 들어 봐요"));
     const s = h("div", {class:"sentence"});
-    words.forEach(w => { const clean = w.replace(/[.,!?]/g, "").toLowerCase(); const sight = sightSet.map(x => x.toLowerCase()).includes(clean);
-      s.append(h("button", {class:sight ? "sw" : "", onclick:e => { e.currentTarget.classList.toggle("lit"); if(wordUrl(clean)) playUrl(wordUrl(clean)); }}, w)); });
-    stage.append(s);
-    if(retry) stage.append(h("div", {class:"hint"}, "엄마가 한 단어씩 먼저 읽어 주고, 같이 읽은 뒤 아이 혼자 다시 해요."));
-    stage.append(h("div", {class:"row"},
-      h("button", {class:"btn ok", onclick:() => { rec("reading", true); Q ? ask() : finishStep(); }}, "다 읽었어요"),
-      h("button", {class:"btn again", onclick:() => { rec("reading", false); if(!retry){ retry = true; read(); } else Q ? ask() : finishStep(); }}, "다시 해볼게요")));
+    words.forEach(w => { const clean = w.replace(/[.,!?]/g, "").toLowerCase();
+      s.append(h("button", {class:sightSet.includes(clean) ? "sw" : "", onclick:e => { e.currentTarget.classList.add("lit"); sayWord(clean); }}, w)); });
+    stage.append(s, h("button", {class:"btn next", onclick:() => Q ? ask() : finishStep()}, "다 읽었어요"));
   }
   function ask(){
-    stage.replaceChildren(h("div", {class:"sentence", style:"font-size:clamp(30px,5vw,44px)"}, words.join(" ")), h("div", {class:"q"}, Q.q));
-    let tried = false;
-    stage.append(h("div", {class:"choices"}, shuffle(Q.choices).map(x => h("button", {onclick:e => { const ok = x === Q.answer; if(!tried) rec("reading", ok); tried = true; e.currentTarget.className = ok ? "right" : "wrong"; if(ok) setTimeout(finishStep, 900); else toast("글을 다시 읽어 보고 골라요"); }}, x))));
+    stage.replaceChildren(h("div", {class:"sentence", style:"font-size:clamp(30px,5vw,44px)"}, words.join(" ")));
+    quizRunInto(stage);
+  }
+  function quizRunInto(st){
+    let tries = 0, over = false;
+    st.append(h("div", {class:"q"}, Q.q));
+    const box = h("div", {class:"choices big-choices"});
+    shuffle(Q.choices).forEach(x => box.append(h("button", {onclick:e => { if(over) return; const b = e.currentTarget;
+      if(x === Q.answer){ over = true; b.classList.add("right"); rec("reading", tries === 0); setTimeout(finishStep, 900); }
+      else { tries++; b.classList.add("wrong"); b.disabled = true; if(tries >= 2){ over = true; rec("reading", false); [...box.children].forEach(c => { if(c.textContent === Q.answer) c.classList.add("right"); }); toast("정답을 보고 글을 다시 읽어 봐요"); setTimeout(finishStep, 2200); } else toast("글을 다시 읽어 보고 골라요"); } }}, x)));
+    st.append(box);
   }
   read();
 }
