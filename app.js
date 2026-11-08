@@ -397,46 +397,20 @@ function openGate(){
 function parent(){
   app.replaceChildren();
   app.append(h("div", {class:"bar"}, h("div", {class:"brand"}, svg("gear"), "부모 관리"), h("button", {class:"pill-btn", onclick:home}, svg("home"), "아이 화면으로")));
-  // 오늘 내용
-  const lv = h("div", {class:"seg"}, Object.entries(LEVELS).map(([k, v]) => h("button", {class:S.level === k ? "on" : "", onclick:() => { S.level = k; save(); parent(); toast("난이도: "+v.name); }}, v.name)));
-  app.append(h("section", {class:"panel"}, h("h2", null, "오늘 내용"),
-    h("p", null, (RAW.sample ? "지금은 예시 내용이에요. 책 사진을 Claude에게 보내면 그날 단어로 바뀌어요." : (RAW.book || "")+" "+(T.page || ""))),
-    h("div", {class:"tbl-wrap"}, h("table", null, h("tbody", null,
-      h("tr", null, h("th", null, "배운 소리"), h("td", {class:"lt"}, LEARNED.join(" "))),
-      h("tr", null, h("th", null, "오늘 새 소리"), h("td", {class:"lt"}, NEW)),
-      h("tr", null, h("th", null, "오늘 단어"), h("td", {class:"lt"}, TODAY_WORDS.join(", ") || "–")),
-      h("tr", null, h("th", null, "복습 단어"), h("td", {class:"lt"}, REVIEW_WORDS.join(", ") || "–")),
-      h("tr", null, h("th", null, "끝소리"), h("td", {class:"lt"}, RIMES.map(r => "-"+r).join(", ") || "–")),
-      h("tr", null, h("th", null, "사이트워드"), h("td", {class:"lt"}, [...SIGHT_TODAY, ...SIGHT_REVIEW].map(o => o.w).join(", ") || "–"))))),
-    h("h2", null, "난이도"), h("p", null, "쉬움은 문제 수가 적고 글자 카드가 적어요. 어려움은 문제가 많고 복습 단어가 더 섞여요."), lv,
-    h("div", {class:"confirm"}, h("button", {class:"sbtn go", onclick:worksheet}, "오늘 학습지 보기·인쇄"))));
-  // 기록
+  // 학습 기록
   const rows = CATS.map(([k, name]) => { const r = S.records[k]; const pct = r.all ? Math.round(r.ok/r.all*100) : 0;
     return h("tr", null, h("td", null, name), h("td", null, r.ok+" / "+r.all), h("td", null, r.all ? pct+"%" : "–"), h("td", null, h("div", {class:"meter"}, h("i", {style:"width:"+pct+"%"})))); });
   const misses = Object.entries(S.misses).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, n]) => k.replace(/^s:/, "").replace(/^w:/, "")+" ("+n+")");
   app.append(h("section", {class:"panel"}, h("h2", null, "학습 기록"),
-    h("p", null, "오늘 진도: 7단계 중 "+S.done+"단계 끝. 기록은 이 기기에만 저장돼요."),
+    h("p", null, "오늘 진도: 7단계 중 "+S.done+"단계 끝. 기록은 이 기기에만 저장돼요. 맞음은 첫 번에 맞힌 것만 세요."),
     h("div", {class:"tbl-wrap"}, h("table", null, h("thead", null, h("tr", null, h("th", null, "기술"), h("th", null, "맞음 / 전체"), h("th", null, "맞은 비율"), h("th", null, ""))), h("tbody", null, rows))),
     h("p", null, "자주 틀린 것: "+(misses.join(", ") || "아직 없어요")+" · 이 단어와 소리는 복습에 먼저 나와요.")));
-  app.append(h("section", {class:"panel"}, h("h2", null, "단계 바로 가기"), h("p", null, "원하는 단계 하나만 다시 해요. 오늘 진도는 바뀌지 않아요."),
-    h("div", {class:"jump"}, STEPS.map(s => h("button", {onclick:() => runLesson(s.n, {review:true, single:true})}, h("b", null, s.n+"단계"), s.name)))));
-  // 녹음
-  const items = neededKeys(); const missing = items.filter(x => !CLIPS.has(x.key)).length;
-  app.append(h("section", {class:"panel"}, h("h2", null, "음원 녹음"),
-    h("p", null, "지금 진도에 필요한 소리예요. 소리 하나만 짧게 내고 멈춤을 눌러요. 앞뒤 빈 소리와 크기는 자동으로 맞춰요. 아직 녹음 안 한 소리: "+missing+"개"),
-    h("div", {class:"rec-list"}, items.map(recRow))));
-  // 백업
+  // 백업·복원
   const fileIn = h("input", {type:"file", accept:"application/json,.json", id:"restore-file", hidden:""});
   fileIn.addEventListener("change", () => { if(fileIn.files && fileIn.files[0]) restore(fileIn.files[0]); });
   app.append(h("section", {class:"panel"}, h("h2", null, "백업·복원"),
-    h("p", null, "학습 기록과 녹음한 소리를 파일 하나로 저장해요. 다른 기기에서 불러오면 그대로 옮겨져요. 일주일에 한 번 해두면 안전해요."),
+    h("p", null, "학습 기록을 파일 하나로 저장해요. 일주일에 한 번 해두면 안전해요. 이 파일을 Claude에게 보내면 자주 틀리는 것에 맞춰 문제를 바꿔 줘요."),
     h("div", {class:"confirm"}, h("button", {class:"sbtn go", onclick:makeBackup}, "백업 파일 만들기"), h("button", {class:"sbtn", onclick:() => fileIn.click()}, "백업 불러오기"), fileIn)));
-  // 초기화
-  const conf = h("div", {class:"confirm"});
-  const base = () => [h("button", {class:"danger", onclick:() => ask("오늘 진도 처음으로", () => { S.done = 0; })}, "오늘 진도 처음으로"), h("button", {class:"danger", onclick:() => ask("학습 기록 모두 지우기", () => { S.records = blankRec(); S.misses = {}; })}, "학습 기록 모두 지우기")];
-  function ask(label, fn){ conf.replaceChildren(h("span", null, label+" 정말 할까요?"), h("button", {class:"danger", onclick:() => { fn(); save(); parent(); toast("완료했어요"); }}, "네"), h("button", {class:"pill-btn", onclick:() => conf.replaceChildren(...base())}, "아니요")); }
-  conf.replaceChildren(...base());
-  app.append(h("section", {class:"panel"}, h("h2", null, "초기화"), conf));
 }
 
 /* ---------- 학습지 (인쇄용) ---------- */
