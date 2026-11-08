@@ -103,7 +103,10 @@ const Audio2 = {
   play(kind, key){ const u = Audio2.url(kind, key); if(!u) return Promise.resolve(false);
     return new Promise(res => { let done = false; const fin = ok => { if(!done){ done = true; res(ok); } };
       try { const a = new Audio(u); a.onended = () => fin(true); a.onerror = () => fin(false);
-        const p = a.play(); if(p && p.catch) p.catch(() => fin(false)); setTimeout(() => fin(!a.error && !a.paused || a.ended), 6000); }
+        // 소리 길이를 알면 길이 + 2초까지 기다림. 길이를 모르면 15초. 그때까지 안 끝나면 실패로 봄
+        let limit = setTimeout(() => fin(false), 15000);
+        a.onloadedmetadata = () => { if(isFinite(a.duration) && a.duration > 0){ clearTimeout(limit); limit = setTimeout(() => fin(a.ended), a.duration*1000 + 2000); } };
+        const p = a.play(); if(p && p.catch) p.catch(() => fin(false)); }
       catch(e){ fin(false); } }); },
   async seq(list, gap){ for(const [k, v] of list){ const ok = await Audio2.play(k, v); if(!ok) return false; await wait(gap || 350); } return true; }
 };
@@ -141,62 +144,73 @@ function shuffle(a){ a = a.slice(); for(let i = a.length - 1; i > 0; i--){ const
 //  opts.hint     첫 번째 오답 뒤 보여줄 힌트 글
 //  opts.easier   두 번 틀렸을 때 이어서 낼 쉬운 문제 (함수 → opts). 결과는 기록하지 않음
 let failStreak = 0;
+// 모듈이 쉬운 문제를 안 주면: 같은 소리 + 보기 2개(정답 1, 오답 1)로 자동으로 만듦
+function defaultEasier(opts){
+  const wrong = opts.choices.find(c => c.value !== opts.answer);
+  const right = opts.choices.find(c => c.value === opts.answer);
+  if(!right || !wrong) return null;
+  return {prompt:"정답은 "+right.label+"예요. "+right.label+"을(를) 눌러요", play:opts.play, letters:opts.letters, choices:shuffle([right, wrong]), answer:opts.answer};
+}
 function ask(stage, opts){
   return new Promise(resolve => {
-    let tries = 0, over = false;
-    const render = () => {
-      stage.replaceChildren();
-      if(opts.counter) stage.append(h("div", {class:"counter"}, opts.counter));
-      if(opts.top) stage.append(opts.top);
-      if(opts.prompt) stage.append(h("div", {class:"q"}, opts.prompt));
-      if(opts.play) stage.append(h("button", {class:"listen", onclick:() => playPrompt()}, svg("spk"), "다시 듣기"));
-      stage.append(hintBox, banner, box);
-    };
+    let tries = 0, over = false, done = false;
     const hintBox = h("div", {class:"hint", hidden:true});
     const banner = h("div", {class:"banner", hidden:true});
-    const box = h("div", {class:"choices big-choices"+(opts.letters ? " letters" : ""), "data-ans":TEST ? String(opts.answer) : null});
+    const box = h("div", {class:"choices big-choices locked-wait"+(opts.letters ? " letters" : ""), "data-ans":TEST ? String(opts.answer) : null});
+    const lock = on => { box.classList.toggle("locked-wait", on); box.querySelectorAll(".choice").forEach(b => { if(!b.classList.contains("wrong")) b.disabled = on; }); };
+    // 문제 소리가 끝나야 고를 수 있어요. 소리가 실패하면 고르기 잠금 유지 → 오답으로 세지 않음
     async function playPrompt(){
-      if(!opts.play) return true;
+      if(!opts.play){ lock(false); return true; }
+      lock(true); banner.hidden = true;
       const ok = await opts.play();
-      if(!ok && !over) audioFailed();
+      if(over) return ok;
+      if(ok) lock(false); else audioFailed();
       return ok;
     }
     function audioFailed(){
       banner.hidden = false;
       banner.replaceChildren(h("span", null, "소리가 안 나와요. 이 문제는 틀린 걸로 세지 않아요."),
-        h("button", {class:"sbtn", onclick:() => { banner.hidden = true; playPrompt(); }}, "다시 듣기"),
+        h("button", {class:"sbtn", onclick:() => playPrompt()}, "다시 듣기"),
         h("button", {class:"sbtn", onclick:() => finish("skip")}, "이 문제 넘기기"));
     }
-    function finish(result){ if(over && result !== "skip-after") { /* already */ } over = true;
+    function finish(result){ if(done) return; done = true; over = true;
       if(result !== "skip"){ record(opts.skill, result, opts.item); failStreak = result === "fail" ? failStreak + 1 : 0; }
       resolve(result); }
-    opts.choices.forEach(c => box.append(h("button", {class:"choice", "data-v":c.value, onclick:async e => {
+    opts.choices.forEach(c => box.append(h("button", {class:"choice", "data-v":c.value, disabled:!!opts.play, onclick:async e => {
       if(over) return; const btn = e.currentTarget;
       if(c.play) await c.play();
       if(c.value === opts.answer){ over = true; btn.classList.add("right"); const r = tries === 0 ? "first" : "hint"; setTimeout(() => finish(r), 900); return; }
       tries++; btn.classList.add("wrong"); btn.disabled = true;
       if(tries === 1){ hintBox.hidden = false; hintBox.textContent = opts.hint || "다시 듣고 골라 봐요"; await wait(300); playPrompt(); return; }
-      // 두 번 틀림: 정답을 보여주고 들려준 뒤, 쉬운 문제 하나
+      // 두 번 틀림: 정답을 보여주고 들려준 뒤, 쉬운 확인 문제 하나 (모든 문제 유형에 공통)
       over = true; box.querySelectorAll(".choice").forEach(b => { if(b.dataset.v === String(opts.answer)) b.classList.add("right"); });
       hintBox.hidden = false; hintBox.textContent = "정답은 이거예요. 같이 들어 봐요";
-      await wait(400); await playPrompt(); await wait(900);
-      if(opts.easier){ const e2 = opts.easier(); if(e2){ e2.skill = null; await askQuiet(stage, e2); } }
+      await wait(400); if(opts.play) await opts.play(); await wait(900);
+      const e2 = opts.easier ? opts.easier() : defaultEasier(opts);
+      if(e2) await askQuiet(stage, e2);
       finish("fail");
     }}, c.label)));
-    render();
+    stage.replaceChildren();
+    if(opts.counter) stage.append(h("div", {class:"counter"}, opts.counter));
+    if(opts.top) stage.append(opts.top);
+    if(opts.prompt) stage.append(h("div", {class:"q"}, opts.prompt));
+    if(opts.play) stage.append(h("button", {class:"listen", onclick:() => playPrompt()}, svg("spk"), "다시 듣기"));
+    stage.append(hintBox, banner, box);
     setTimeout(() => playPrompt(), 300);
   });
 }
-// 쉬운 확인 문제: 기록 없이, 맞힐 때까지
+// 쉬운 확인 문제: 기록 없이. 틀린 보기는 잠겨서 결국 정답만 남아요. 넘기기 버튼도 있어요.
 function askQuiet(stage, opts){
   return new Promise(resolve => {
+    let done = false; const end = () => { if(!done){ done = true; resolve(); } };
     stage.replaceChildren(h("div", {class:"q"}, opts.prompt || "다시 해 봐요"));
     if(opts.play) stage.append(h("button", {class:"listen", onclick:() => opts.play()}, svg("spk"), "다시 듣기"));
     const box = h("div", {class:"choices big-choices"+(opts.letters ? " letters" : "")});
     box.dataset.quiet = "1"; if(TEST) box.dataset.ans = String(opts.answer);
     opts.choices.forEach(c => box.append(h("button", {class:"choice", "data-v":c.value, onclick:async e => { const b = e.currentTarget; if(c.play) await c.play();
-      if(c.value === opts.answer){ b.classList.add("right"); setTimeout(resolve, 800); } else { b.classList.add("wrong"); b.disabled = true; if(opts.play) opts.play(); } }}, c.label)));
-    stage.append(box); if(opts.play) setTimeout(() => opts.play(), 300);
+      if(c.value === opts.answer){ b.classList.add("right"); setTimeout(end, 800); } else { b.classList.add("wrong"); b.disabled = true; } }}, c.label)));
+    stage.append(box, h("button", {class:"sbtn quiet-skip", onclick:end}, "다음 문제로"));
+    if(opts.play) setTimeout(() => opts.play(), 300);
   });
 }
 
@@ -273,7 +287,7 @@ async function runCategory(cat, chained){
   const st = catStatus(cat); if(st.state !== "ready" && st.state !== "done") return "skip";
   const mods = approved(cat.id).filter(m => readyItems(m).length);
   running = {stopped:false}; const me = running; failStreak = 0;
-  let solved = 0;
+  let solved = 0, skipped = 0;
   for(const m of mods){
     const items = readyItems(m);
     for(let i = 0; i < items.length; i++){
@@ -282,12 +296,14 @@ async function runCategory(cat, chained){
       const stage = shell(cat);
       const r = await m.run(stage, items[i], Object.assign({}, CTX, {counter:(i+1)+" / "+items.length}));
       if(me.stopped) return "stop";
-      if(r === "first" || r === "hint" || r === "fail") solved++;
+      if(r === "first" || r === "hint" || r === "fail") solved++; else skipped++;
     }
   }
-  if(solved > 0){ S.progress.done[cat.id] = true; save(); }
-  if(!chained){ celebrate(solved ? cat.name+" 끝! 잘했어요" : "이번엔 풀 문제가 없었어요", home); return "done"; }
-  if(solved) await celebrateWait(cat.name+" 끝! 잘했어요");
+  const complete = solved > 0 && skipped === 0;   // 전부 풀었을 때만 완료
+  if(complete){ S.progress.done[cat.id] = true; save(); }
+  const msg = complete ? cat.name+" 끝! 잘했어요" : solved ? "소리가 안 나온 문제가 있어서 다음에 다시 해요" : "이번엔 풀 문제가 없었어요";
+  if(!chained){ celebrate(msg, home); return "done"; }
+  if(solved) await celebrateWait(msg);
   return "done";
 }
 function restScreen(cat){
@@ -336,7 +352,7 @@ function parent(){
   fileIn.addEventListener("change", async () => { const f = fileIn.files && fileIn.files[0]; fileIn.value = ""; if(!f) return;
     const d = await readBackup(f); if(!d.ok){ toast(d.msg); return; }
     area.replaceChildren(h("span", null, d.summary+" · 지금 기록을 이 파일로 바꿀까요?"),
-      h("button", {class:"danger", onclick:() => { applyBackup(d.data); toast("불러왔어요"); parent(); }}, "네, 바꿔요"),
+      h("button", {class:"danger", onclick:async e => { e.currentTarget.disabled = true; const r = await applyBackup(d.data); parent(); toast(r.ok ? "불러왔어요"+(r.clips ? " · 녹음 "+r.clips+"개" : "") : "불러오지 못했어요. 지금 기록은 그대로예요"); }}, "네, 바꿔요"),
       h("button", {class:"pill-btn", onclick:() => area.replaceChildren(...baseBtns())}, "아니요")); });
   const baseBtns = () => [h("button", {class:"sbtn go", onclick:() => download(backupData(true), "phonics-backup-"+today()+".json")}, "백업 파일 만들기"),
     h("button", {class:"sbtn", onclick:() => fileIn.click()}, "백업 불러오기"),
@@ -356,22 +372,37 @@ async function download(dataP, name){
   const a = h("a", {href:URL.createObjectURL(blob), download:name}); document.body.append(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); toast("파일을 만들었어요 · 다운로드 폴더를 확인해요");
 }
-// 백업 파일 검사: 형식이 맞는지 먼저 확인하고, 맞을 때만 바꿀지 물어봄
+// 백업 파일 검사: 6개 기록이 모두 있고 숫자가 0 이상 정수인지까지 확인. 맞을 때만 바꿀지 물어봄
+const isCount = n => Number.isInteger(n) && n >= 0 && n < 1e7;
+function checkRecords(recs){
+  if(!recs || typeof recs !== "object") return null;
+  // 예전 형식 {ok, all} → 새 형식 (맞힘은 '처음에 맞힘', 나머지는 '틀림')
+  if(Object.values(recs).some(r => r && typeof r.all === "number")){ const n = {};
+    for(const k in recs){ const r = recs[k] || {}; if(!isCount(r.ok) || !isCount(r.all) || r.ok > r.all) return null; n[k] = {first:r.ok, hint:0, fail:r.all - r.ok}; } recs = n; }
+  const out = {};
+  for(const [k] of SKILLS){ const r = recs[k]; if(!r || !isCount(r.first) || !isCount(r.hint) || !isCount(r.fail)) return null; out[k] = {first:r.first, hint:r.hint, fail:r.fail}; }
+  return out;
+}
 async function readBackup(file){
   try { const d = JSON.parse(await file.text());
     if(!d || d.app !== "phonics-reading") return {ok:false, msg:"파닉스 리딩 백업 파일이 아니에요"};
-    if(!d.records || typeof d.records !== "object") return {ok:false, msg:"기록이 없는 파일이에요"};
-    let recs = d.records;
-    // 예전 형식 {ok, all} → 새 형식으로 바꿈 (맞힘은 '처음에 맞힘'으로, 나머지는 '틀림'으로)
-    if(Object.values(recs).some(r => r && typeof r.all === "number")){ const n = {}; for(const k in recs){ const r = recs[k] || {}; n[k] = {first:r.ok || 0, hint:0, fail:Math.max(0, (r.all || 0) - (r.ok || 0))}; } recs = n; }
-    const total = Object.values(recs).reduce((s, r) => s + (r.first||0) + (r.hint||0) + (r.fail||0), 0);
-    return {ok:true, data:Object.assign({}, d, {records:recs}), summary:(d.savedAt ? d.savedAt.slice(0,10) : "날짜 모름")+" 백업 · 푼 문제 "+total+"개"};
+    const recs = checkRecords(d.records); if(!recs) return {ok:false, msg:"기록이 망가진 파일이라 불러오지 않았어요"};
+    const misses = {}; if(d.misses && typeof d.misses === "object") for(const k in d.misses){ if(isCount(d.misses[k])) misses[k] = d.misses[k]; }
+    const clips = (d.clips && typeof d.clips === "object") ? d.clips : null;
+    const total = Object.values(recs).reduce((s, r) => s + r.first + r.hint + r.fail, 0);
+    return {ok:true, data:{records:recs, misses, progress:d.progress, clips}, summary:(typeof d.savedAt === "string" ? d.savedAt.slice(0,10) : "날짜 모름")+" 백업 · 푼 문제 "+total+"개"};
   } catch(e){ return {ok:false, msg:"파일을 읽을 수 없어요"}; }
 }
 async function applyBackup(d){
-  S.records = d.records; S.misses = d.misses || {}; if(d.progress) S.progress = d.progress; S = normalize(S); save();
-  if(d.clips && dbReady){ for(const k in d.clips){ const c = d.clips[k]; try { const bin = atob(c.data); const u8 = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    const blob = new Blob([u8], {type:c.type || "audio/wav"}); await IDB.put(k, {blob, dur:c.dur, at:c.at}); const o = CLIPS.get(k); if(o) URL.revokeObjectURL(o); CLIPS.set(k, URL.createObjectURL(blob)); } catch(e) {} } }
+  try {
+    const next = normalize({records:d.records, misses:d.misses, progress:(d.progress && typeof d.progress === "object" && d.progress.done && typeof d.progress.done === "object") ? {day:String(d.progress.day || ""), done:d.progress.done} : null});
+    let n = 0;
+    if(d.clips && dbReady){ for(const k in d.clips){ const c = d.clips[k]; if(!c || typeof c.data !== "string") continue;
+      const bin = atob(c.data); const u8 = new Uint8Array(bin.length); for(let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const blob = new Blob([u8], {type:c.type || "audio/wav"}); await IDB.put(k, {blob, dur:c.dur, at:c.at}); const o = CLIPS.get(k); if(o) URL.revokeObjectURL(o); CLIPS.set(k, URL.createObjectURL(blob)); n++; } }
+    S = next; save();
+    return {ok:true, clips:n};
+  } catch(e){ return {ok:false}; }
 }
 
 /* =========================================================
@@ -391,7 +422,7 @@ if(TEST){
 }
 
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch(e) {}
-window.__phonics = {decodable, graphemes, S:() => S, excluded:EXCLUDED, files:FILES};  // 시험 확인용
+window.__phonics = {decodable, graphemes, S:() => S, excluded:EXCLUDED, files:FILES, audio:Audio2};  // 시험 확인용
 loadClips().then(() => home());
 home();
 })();
